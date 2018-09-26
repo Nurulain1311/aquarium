@@ -1,0 +1,243 @@
+#include <CayenneESP8266Shield.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#include <SimpleTimer.h>
+#include <SPI.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+
+#define ONE_WIRE_BUS 10
+
+OneWire oneWire(ONE_WIRE_BUS);
+DallasTemperature sensors(&oneWire);
+
+SimpleTimer timer;
+
+char token[] = "token";
+char ssid[] = "wifi ssid";
+char password[] = "password here";
+
+
+#define EspSerial Serial
+ESP8266 wifi(EspSerial);
+
+#define OLED_RESET 12
+Adafruit_SSD1306 display(OLED_RESET);
+
+
+#define LOGO16_GLCD_HEIGHT 64
+#define LOGO16_GLCD_WIDTH  128
+
+
+#define foodTrig 9
+#define foodThrow 8
+#define currentPin A2
+#define filterPin 7
+
+const unsigned long sampleTime = 100000UL;
+const unsigned long numSamples = 500UL;
+const unsigned long sampleInterval = sampleTime / numSamples;
+const int adc_zero = 510;
+
+int feedButton;
+int filterButton;
+int trigger;
+float temp;
+int feedingTimer;
+int currentTimer;
+
+int displayTimer;
+bool online = false;
+
+
+
+void setup()
+{
+
+	display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
+	display.clearDisplay();
+
+	for (int16_t i = 0; i<display.height(); i += 2) {
+			display.drawCircle(display.width() / 2, display.height() / 2, i, WHITE);
+			display.display();
+			delay(1);
+		}
+
+
+	display.setTextSize(2);
+	display.setTextColor(WHITE);
+	display.setCursor(5,25);
+	display.println("tanker 2.1");
+	display.display();
+
+	for (int16_t i = 0; i<display.height(); i += 2) {
+			display.drawCircle(display.width() / 2, display.height() / 2, i, BLACK);
+			display.display();
+			delay(1);
+		}
+
+	display.clearDisplay();
+	display.setTextSize(2);
+	display.setTextColor(WHITE);
+	display.setCursor(5,25);
+	display.println("tanker 2.1");
+	display.display();
+
+
+
+
+
+	EspSerial.begin(9600);
+	delay(10);
+
+	sensors.begin();
+
+
+
+	Cayenne.begin(token, wifi, ssid, password);
+
+	feedingTimer = timer.setInterval(600000, feedingDone);
+	currentTimer = timer.setInterval(5000, getCurrent);
+
+	displayTimer = timer.setInterval(10000, displayUpdate);
+	timer.disable(feedingTimer);
+
+	pinMode(foodTrig, INPUT_PULLUP);
+	pinMode(currentPin, INPUT);
+	pinMode(filterPin, OUTPUT);
+	pinMode(foodThrow, OUTPUT);
+
+	Cayenne.virtualWrite(V3, LOW);
+}
+
+void loop()
+{
+	timer.run();
+	Cayenne.run();
+
+
+	if (filterButton == 1)
+		{
+			digitalWrite(filterPin, 1);
+		}
+	else
+		{
+			digitalWrite(filterPin, 0);
+		}
+
+
+
+	if (feedButton == 1)
+		{
+
+			Cayenne.virtualWrite(V3, HIGH);
+
+			timer.enable(feedingTimer);
+			digitalWrite(foodThrow, HIGH);
+			delay(500);
+
+			trigger = digitalRead(foodTrig);
+			while (trigger == HIGH)
+				{
+					trigger = digitalRead(foodTrig);
+					delay(100);
+				}
+			digitalWrite(foodThrow, LOW);
+			feedButton = 0;
+
+			Cayenne.virtualWrite(V1, LOW);
+		}
+}
+
+
+void feedingDone()
+{
+	Cayenne.virtualWrite(V3, LOW);
+	timer.disable(feedingTimer);
+}
+
+
+void getCurrent()
+{
+	unsigned long currentAcc = 0;
+	unsigned int count = 0;
+	unsigned long prevMicros = micros() - sampleInterval;
+	while (count < numSamples)
+		{
+			if (micros() - prevMicros >= sampleInterval)
+				{
+					int adc_raw = analogRead(currentPin) - adc_zero;
+					currentAcc += (unsigned long)(adc_raw * adc_raw);
+					++count;
+					prevMicros += sampleInterval;
+				}
+		}
+
+	float rms = sqrt((float)currentAcc / (float)numSamples) * (75.7576 / 1024.0);
+	int watts = rms * 120;
+	Cayenne.virtualWrite(V4, rms);
+	Cayenne.virtualWrite(V11, rms);
+	Cayenne.virtualWrite(V15, watts);
+
+}
+
+
+void displayUpdate()
+{
+	display.clearDisplay();
+	display.setTextSize(2);
+	display.setTextColor(WHITE);
+	display.setCursor(0,0);
+	display.print("Temp:");
+	display.print(temp);
+	display.setCursor(25,30);
+	display.print("Cayenne");
+	display.setCursor(30,50);
+	if (online == true)
+		{
+			display.print("Online");
+		}
+	else
+		{
+			display.print("OFFLINE!");
+		}
+
+	display.display();
+}
+
+
+
+CAYENNE_CONNECTED()
+{
+	online = true;
+}
+
+CAYENNE_DISCONNECTED()
+{
+	online = false;
+	digitalWrite(filterPin, 0);
+}
+
+
+
+
+
+
+
+CAYENNE_OUT(V0)
+{
+	sensors.requestTemperatures();
+	temp = sensors.getTempFByIndex(0);
+	Cayenne.virtualWrite(V0, temp);
+	Cayenne.virtualWrite(V10, temp);
+}
+CAYENNE_IN(V1)
+{
+	feedButton = getValue.asInt();
+}
+CAYENNE_IN(V5)
+{
+	filterButton = getValue.asInt();
+}
